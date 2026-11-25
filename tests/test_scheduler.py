@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -137,6 +138,75 @@ class ConfigAndRunnerTests(unittest.TestCase):
                 self.assertEqual(badge["status"], "fresh")
             finally:
                 runner.shutdown()
+
+    def test_multi_script_types_and_custom_runners(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp) / "scripts"
+            root_dir.mkdir(parents=True)
+            (root_dir / "refresh_data.ps1").write_text("Write-Output 'hello powershell'\n", encoding="utf-8")
+            (root_dir / "nightly_job.bat").write_text("@echo hello batch\r\n", encoding="utf-8")
+            (root_dir / "model.R").write_text("cat('hello r')\n", encoding="utf-8")
+            (root_dir / "workflow.yxmd").write_text("<AlteryxDocument />\n", encoding="utf-8")
+            (root_dir / "notes.txt").write_text("ignored\n", encoding="utf-8")
+
+            cfg = AppConfig(
+                base_dir=Path(tmp),
+                data_dir=Path(tmp) / "data",
+                python_exe=sys.executable,
+                script_runners={".yxmd": ["C:\\Program Files\\Alteryx\\bin\\AlteryxEngineCmd.exe", "{script}"]},
+                scripts_roots=[ScriptRoot(id="scripts", label="Scripts", path=root_dir)],
+            )
+            cfg.data_dir.mkdir(parents=True, exist_ok=True)
+            cfg.logs_dir.mkdir(parents=True, exist_ok=True)
+
+            listing = browse_directory(cfg, "scripts", "")
+            names = [s["name"] for s in listing["scripts"]]
+            self.assertIn("refresh_data.ps1", names)
+            self.assertIn("nightly_job.bat", names)
+            self.assertIn("model.R", names)
+            self.assertIn("workflow.yxmd", names)
+            self.assertNotIn("notes.txt", names)
+
+            ps_info = inspect_script(cfg, "scripts:refresh_data.ps1")
+            self.assertEqual(ps_info["suggested_name"], "Refresh Data")
+
+            db = Database(cfg.db_path)
+            runner = PipelineRunner(cfg, db)
+
+            ps_cmd, _ = runner._build_script_command(root_dir / "refresh_data.ps1", {}, ["-Env", "Prod"])
+            self.assertIn("-ExecutionPolicy", ps_cmd)
+            self.assertIn("Bypass", ps_cmd)
+            self.assertEqual(ps_cmd[-3:], [str(root_dir / "refresh_data.ps1"), "-Env", "Prod"])
+
+            yxmd_cmd, _ = runner._build_script_command(root_dir / "workflow.yxmd", {}, [])
+            self.assertEqual(
+                yxmd_cmd,
+                ["C:\\Program Files\\Alteryx\\bin\\AlteryxEngineCmd.exe", str(root_dir / "workflow.yxmd")],
+            )
+
+            if os.name == "nt":
+                runner.start()
+                try:
+                    bat_job = db.create_job(
+                        {
+                            "name": "Nightly Batch",
+                            "script_ref": "scripts:nightly_job.bat",
+                            "schedule_type": "manual",
+                        },
+                        user="Analyst",
+                    )
+                    run = runner.enqueue_job(bat_job["id"], trigger="manual", triggered_by="Analyst")
+                    for _ in range(50):
+                        latest = db.get_run(run["id"])
+                        if latest and latest["status"] not in ("queued", "running"):
+                            break
+                        time.sleep(0.1)
+                    latest = db.get_run(run["id"])
+                    assert latest is not None
+                    self.assertEqual(latest["status"], "succeeded")
+                    self.assertIn("hello batch", runner.read_run_log(latest))
+                finally:
+                    runner.shutdown()
 
 
 if __name__ == "__main__":

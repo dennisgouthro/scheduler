@@ -42,7 +42,7 @@
         </nav>
 
         <div class="topbar-right">
-          <div class="worker-hud" id="queue-pill" title="Active Python worker slots">
+          <div class="worker-hud" id="queue-pill" title="Active script worker slots">
             <span class="hud-dot"></span>
             <span id="queue-text">Ready · 0/4</span>
           </div>
@@ -105,7 +105,7 @@
             </svg>
           </div>
           <h2 id="empty-title">No scripts registered</h2>
-          <p id="empty-body">Pick any Python script from your analytics share and configure when it runs in seconds.</p>
+          <p id="empty-body">Pick any script (.py, .ps1, .bat, .cmd, .r, .js, .vbs) from your analytics share and configure when it runs in seconds.</p>
           <button class="btn btn-primary" id="btn-empty-new">+ Add your first script</button>
         </div>
       </section>
@@ -203,7 +203,7 @@
     <div class="drawer-header">
       <div>
         <h2 id="job-drawer-title">Add Script</h2>
-        <p class="drawer-sub" id="job-drawer-sub">Pick a Python script from the share and set its schedule.</p>
+        <p class="drawer-sub" id="job-drawer-sub">Pick a script (.py, .ps1, .bat, .cmd, .r, .js, .vbs) and set its schedule.</p>
       </div>
       <button class="icon-btn" id="close-job-drawer" aria-label="Close">✕</button>
     </div>
@@ -213,7 +213,7 @@
 
       <div class="form-group">
         <div class="label-row">
-          <label for="field-script-ref">Python script</label>
+          <label for="field-script-ref">Script</label>
           <button type="button" class="link-btn" id="btn-toggle-browser">Browse share</button>
         </div>
         <div class="script-display" id="script-display-box">

@@ -52,10 +52,12 @@ def _extract_error_summary(log_lines: list[str], exit_code: int) -> str:
             token in line
             for token in (
                 "Error:",
+                "ERROR:",
                 "Exception:",
                 "OperationalError:",
                 "ProgrammingError:",
                 "DatabaseError:",
+                "FullyQualifiedErrorId",
                 "FAILED:",
                 "CRITICAL:",
             )
@@ -201,7 +203,7 @@ class PipelineRunner:
         tail_lines = log_text.splitlines()[-80:]
         tail = "\n".join(tail_lines).strip() or "(No console output captured)"
         return (
-            f"A scheduled analytics Python script failed on the server. Please help diagnose and fix it.\n\n"
+            f"A scheduled analytics script failed on the server. Please help diagnose and fix it.\n\n"
             f"- **Pipeline:** {job['name']}\n"
             f"- **Script:** `{job['script_ref']}`\n"
             f"- **Status:** {run['status']} (exit code: {run.get('exit_code')})\n"
@@ -275,6 +277,88 @@ class PipelineRunner:
             finally:
                 self._work_queue.task_done()
 
+    def _split_args(self, raw_args: str) -> list[str]:
+        if not raw_args:
+            return []
+        try:
+            tokens = shlex.split(raw_args, posix=(os.name != "nt"))
+        except ValueError:
+            return raw_args.split()
+        if os.name == "nt":
+            cleaned: list[str] = []
+            for tok in tokens:
+                if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ('"', "'"):
+                    cleaned.append(tok[1:-1])
+                else:
+                    cleaned.append(tok)
+            return cleaned
+        return tokens
+
+    def _build_script_command(
+        self,
+        script_path: Path,
+        job: dict[str, Any],
+        extra_args: list[str],
+    ) -> tuple[list[str], str]:
+        """Build the subprocess command and runner label for any supported script type."""
+        ext = script_path.suffix.lower()
+        override_exe = (job.get("python_exe") or "").strip()
+
+        # 1. Custom extension mapping in config.json ("script_runners")
+        custom_template = self.config.script_runners.get(ext)
+        if custom_template:
+            cmd: list[str] = []
+            replaced = False
+            for token in custom_template:
+                if "{script}" in token:
+                    cmd.append(token.replace("{script}", str(script_path)))
+                    replaced = True
+                else:
+                    cmd.append(token)
+            if not replaced:
+                cmd.append(str(script_path))
+            cmd.extend(extra_args)
+            return cmd, cmd[0]
+
+        # 2. Built-in script runners
+        if ext == ".py":
+            exe = override_exe or self.config.python_exe or "python"
+            return [exe, "-u", str(script_path), *extra_args], exe
+
+        if ext == ".ps1":
+            exe = override_exe or self.config.powershell_exe or ("powershell.exe" if os.name == "nt" else "pwsh")
+            return [
+                exe,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                *extra_args,
+            ], exe
+
+        if ext in (".bat", ".cmd"):
+            if os.name == "nt":
+                exe = os.environ.get("COMSPEC") or "cmd.exe"
+                return [exe, "/c", str(script_path), *extra_args], exe
+            exe = "sh"
+            return [exe, str(script_path), *extra_args], exe
+
+        if ext in (".js", ".mjs"):
+            exe = override_exe or "node"
+            return [exe, str(script_path), *extra_args], exe
+
+        if ext == ".r":
+            exe = override_exe or "Rscript"
+            return [exe, str(script_path), *extra_args], exe
+
+        if ext == ".vbs":
+            exe = "cscript.exe"
+            return [exe, "//NoLogo", str(script_path), *extra_args], exe
+
+        raise ValueError(f"Unsupported script type: {ext}")
+
     def _execute_run(self, run_id: str) -> None:
         run = self.db.get_run(run_id)
         if not run or run["status"] != "queued":
@@ -296,6 +380,10 @@ class PipelineRunner:
             _, script_path, _ = self.config.resolve_script_reference(job["script_ref"])
             if not script_path.is_file():
                 raise FileNotFoundError(f"Script file not found: {job['script_ref']}")
+            if not self.config.is_supported_script(script_path):
+                raise ValueError(f"Unsupported script type: {script_path.suffix or '(none)'}")
+            extra_args = self._split_args((job.get("args") or "").strip())
+            cmd, runner_exe = self._build_script_command(script_path, job, extra_args)
         except Exception as exc:
             err = scrub_text(str(exc))
             log_path.write_text(f"[Scheduler Error] {err}\n", encoding="utf-8")
@@ -303,14 +391,6 @@ class PipelineRunner:
             self._publish(run_id, {"type": "line", "text": f"[Scheduler Error] {err}\n"})
             self._publish(run_id, {"type": "done", "status": "failed"})
             return
-
-        python_exe = (job.get("python_exe") or self.config.python_exe or "python").strip()
-        raw_args = (job.get("args") or "").strip()
-        try:
-            extra_args = shlex.split(raw_args, posix=True) if raw_args else []
-        except ValueError:
-            extra_args = raw_args.split()
-        cmd = [python_exe, "-u", str(script_path), *extra_args]
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -327,6 +407,7 @@ class PipelineRunner:
             f"Started : {iso_now()}\n"
             f"Trigger : {run['trigger']} ({run['triggered_by']})\n"
             f"Script  : {job['script_ref']}\n"
+            f"Runner  : {runner_exe}\n"
             f"{'=' * 48}\n"
         )
 
@@ -406,7 +487,7 @@ class PipelineRunner:
 
         except Exception as exc:
             duration = time.monotonic() - start_monotonic
-            err = scrub_text(f"Failed to start Python ({python_exe}): {exc}")
+            err = scrub_text(f"Failed to start runner ({runner_exe}): {exc}")
             with log_path.open("a", encoding="utf-8", errors="replace") as log_fh:
                 log_fh.write(f"\n[Scheduler Error] {err}\n")
             self.db.mark_run_finished(run_id, "failed", -1, duration, err)

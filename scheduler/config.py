@@ -24,6 +24,21 @@ EXCLUDED_DIRS = {
     ".pytest_cache",
 }
 
+DEFAULT_SCRIPT_EXTENSIONS = {
+    ".py",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".js",
+    ".mjs",
+    ".r",
+    ".vbs",
+}
+
+
+def _default_powershell_exe() -> str:
+    return "powershell.exe" if os.name == "nt" else "pwsh"
+
 
 @dataclass(frozen=True)
 class ScriptRoot:
@@ -42,6 +57,8 @@ class AppConfig:
     dev_user: str = "Analyst"
     iis_user_header: str = "X-IIS-User"
     python_exe: str = "python"
+    powershell_exe: str = field(default_factory=_default_powershell_exe)
+    script_runners: dict[str, list[str]] = field(default_factory=dict)
     max_concurrent_runs: int = 4
     default_timeout_minutes: int = 45
     log_retention_days: int = 30
@@ -55,6 +72,19 @@ class AppConfig:
     @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
+
+    def allowed_extensions(self) -> set[str]:
+        exts = set(DEFAULT_SCRIPT_EXTENSIONS)
+        for ext in self.script_runners:
+            cleaned = ext.strip().lower()
+            if cleaned:
+                if not cleaned.startswith("."):
+                    cleaned = "." + cleaned
+                exts.add(cleaned)
+        return exts
+
+    def is_supported_script(self, path: Path) -> bool:
+        return path.suffix.lower() in self.allowed_extensions()
 
     def get_root(self, root_id: str) -> ScriptRoot | None:
         for root in self.scripts_roots:
@@ -132,6 +162,24 @@ def load_config(config_path: Path | str | None = None) -> AppConfig:
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "logs").mkdir(parents=True, exist_ok=True)
 
+    raw_runners = raw.get("script_runners") or {}
+    script_runners: dict[str, list[str]] = {}
+    if isinstance(raw_runners, dict):
+        for raw_ext, raw_cmd in raw_runners.items():
+            ext = str(raw_ext).strip().lower()
+            if not ext:
+                continue
+            if not ext.startswith("."):
+                ext = "." + ext
+            if isinstance(raw_cmd, list):
+                tokens = [str(t).strip() for t in raw_cmd if str(t).strip()]
+            elif isinstance(raw_cmd, str) and raw_cmd.strip():
+                tokens = [raw_cmd.strip()]
+            else:
+                tokens = []
+            if tokens:
+                script_runners[ext] = tokens
+
     return AppConfig(
         base_dir=base_dir,
         app_name=str(raw.get("app_name") or "Analytics Scheduler"),
@@ -141,6 +189,8 @@ def load_config(config_path: Path | str | None = None) -> AppConfig:
         dev_user=str(raw.get("dev_user") or "Analyst"),
         iis_user_header=str(raw.get("iis_user_header") or "X-IIS-User"),
         python_exe=str(raw.get("python_exe") or "python"),
+        powershell_exe=str(raw.get("powershell_exe") or _default_powershell_exe()),
+        script_runners=script_runners,
         max_concurrent_runs=max(1, min(16, int(raw.get("max_concurrent_runs") or 4))),
         default_timeout_minutes=max(1, min(480, int(raw.get("default_timeout_minutes") or 45))),
         log_retention_days=max(1, min(365, int(raw.get("log_retention_days") or 30))),
@@ -150,7 +200,7 @@ def load_config(config_path: Path | str | None = None) -> AppConfig:
 
 
 def browse_directory(config: AppConfig, root_id: str, rel_path: str = "") -> dict[str, Any]:
-    """List folders and .py scripts safely within an allowed root."""
+    """List folders and supported scripts safely within an allowed root."""
     root, target = config.resolve_safe_path(root_id, rel_path)
     root_resolved = root.path.resolve()
 
@@ -179,20 +229,21 @@ def browse_directory(config: AppConfig, root_id: str, rel_path: str = "") -> dic
         rel = entry.relative_to(root_resolved).as_posix()
         if entry.is_dir():
             has_readme = (entry / "README.md").is_file()
-            has_python_dir = (entry / "python").is_dir()
+            has_script_dir = any((entry / sub).is_dir() for sub in ("python", "scripts", "powershell"))
             folders.append(
                 {
                     "name": name,
                     "path": rel,
-                    "is_project": has_readme or has_python_dir,
+                    "is_project": has_readme or has_script_dir,
                 }
             )
-        elif entry.is_file() and entry.suffix.lower() == ".py":
+        elif entry.is_file() and config.is_supported_script(entry):
             stat = entry.stat()
             scripts.append(
                 {
                     "name": name,
                     "path": rel,
+                    "ext": entry.suffix.lower(),
                     "script_ref": f"{root.id}:{rel}",
                     "size_bytes": stat.st_size,
                     "modified_at": stat.st_mtime,
@@ -217,7 +268,7 @@ def browse_directory(config: AppConfig, root_id: str, rel_path: str = "") -> dic
 
 
 def _humanize_name(raw_name: str) -> str:
-    stem = re.sub(r"\.py$", "", raw_name, flags=re.IGNORECASE)
+    stem = Path(raw_name).stem
     cleaned = re.sub(r"[_\-]+", " ", stem).strip()
     return " ".join(w.capitalize() if not w.isupper() else w for w in cleaned.split()) or "Untitled Script"
 
@@ -272,17 +323,20 @@ def _parse_readme(readme_path: Path) -> tuple[str, str]:
 
 
 def inspect_script(config: AppConfig, script_ref: str) -> dict[str, Any]:
-    """Inspect a .py script and detect nearby project README.md & reports/ folder."""
+    """Inspect a supported script and detect nearby project README.md & reports/ folder."""
     root, script_path, rel_path = config.resolve_script_reference(script_ref)
-    if not script_path.is_file() or script_path.suffix.lower() != ".py":
-        raise FileNotFoundError("Python script not found.")
+    if not script_path.is_file() or not config.is_supported_script(script_path):
+        raise FileNotFoundError("Supported script not found.")
 
     root_resolved = root.path.resolve()
     script_dir = script_path.parent
     project_dir = script_dir
 
-    # Standard analytics project folder: <project>/python/script.py
-    if script_dir.name.lower() in {"python", "scripts", "src"} and script_dir.parent != root_resolved:
+    # Standard analytics project folder: <project>/<python|scripts|powershell|src>/script.*
+    if (
+        script_dir.name.lower() in {"python", "scripts", "src", "powershell", "ps1", "bat", "r"}
+        and script_dir.parent != root_resolved
+    ):
         project_dir = script_dir.parent
 
     readme_title = ""

@@ -250,7 +250,7 @@
       if (state.jobs.length === 0) {
         $("empty-title").textContent = "No scripts registered";
         $("empty-body").textContent =
-          "Pick any Python script from your analytics share and configure when it runs in seconds.";
+          "Pick any script (.py, .ps1, .bat, .cmd, .r, .js, .vbs) from your analytics share and configure when it runs in seconds.";
         $("btn-empty-new").classList.remove("hidden");
       } else {
         $("empty-title").textContent = "No matching scripts";
@@ -638,6 +638,17 @@
     };
   }
 
+  function scriptIcon(name, ext) {
+    const e = (ext || (name.includes(".") ? "." + name.split(".").pop() : "")).toLowerCase();
+    if (e === ".py") return "🐍";
+    if (e === ".ps1") return "⚡";
+    if (e === ".bat" || e === ".cmd") return "⌨️";
+    if (e === ".js" || e === ".mjs") return "🟨";
+    if (e === ".r") return "📊";
+    if (e === ".vbs") return "📜";
+    return "📄";
+  }
+
   // ==================== SHARE FILE BROWSER ====================
   async function loadBrowser(rootId, relPath = "") {
     state.browserRootId = rootId || state.me?.roots?.[0]?.id || "projects";
@@ -668,9 +679,10 @@
         `);
       }
       for (const script of data.scripts || []) {
+        const icon = scriptIcon(script.name, script.ext);
         rows.push(`
           <button type="button" class="browser-item" data-pick-script="${escapeHtml(script.script_ref)}">
-            <span class="browser-item-left">🐍 <span>${escapeHtml(script.name)}</span></span>
+            <span class="browser-item-left">${icon} <span>${escapeHtml(script.name)}</span></span>
             <span class="muted">Select</span>
           </button>
         `);
@@ -678,7 +690,7 @@
 
       listEl.innerHTML = rows.length
         ? rows.join("")
-        : `<div class="browser-item muted">No folders or .py scripts here.</div>`;
+        : `<div class="browser-item muted">No folders or supported scripts here.</div>`;
     } catch (err) {
       listEl.innerHTML = `<div class="browser-item" style="color: var(--failed)">${escapeHtml(err.message)}</div>`;
     }
@@ -771,7 +783,7 @@
     } else {
       state.editingJobId = null;
       $("job-drawer-title").textContent = "Add Script";
-      $("job-drawer-sub").textContent = "Pick a Python script from the share and set its schedule.";
+      $("job-drawer-sub").textContent = "Pick a script (.py, .ps1, .bat, .cmd, .r, .js, .vbs) and set its schedule.";
       $("field-job-id").value = "";
       $("field-script-ref").value = "";
       $("selected-script-text").textContent = "No script selected";
@@ -824,7 +836,7 @@
     };
 
     if (!payload.script_ref) {
-      errEl.textContent = "Please choose a Python script from the folder browser above.";
+      errEl.textContent = "Please choose a script from the folder browser above.";
       errEl.classList.remove("hidden");
       return;
     }

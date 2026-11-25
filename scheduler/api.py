@@ -203,6 +203,7 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
                         "dev_mode": cfg.dev_mode,
                         "default_timeout_minutes": cfg.default_timeout_minutes,
                         "roots": [{"id": r.id, "label": r.label} for r in cfg.scripts_roots],
+                        "supported_extensions": sorted(cfg.allowed_extensions()),
                         "queue": self.server.runner.active_counts(),
                     },
                 )
@@ -394,13 +395,16 @@ class SchedulerRequestHandler(BaseHTTPRequestHandler):
             if not str(body.get("name") or "").strip():
                 raise ValueError("Please give this schedule a name.")
             if not str(body.get("script_ref") or "").strip():
-                raise ValueError("Please pick a Python script.")
+                raise ValueError("Please pick a script.")
 
         script_ref = body.get("script_ref")
         if script_ref is not None:
             _, script_path, _ = self.server.config.resolve_script_reference(str(script_ref))
-            if not script_path.is_file() or script_path.suffix.lower() != ".py":
-                raise FileNotFoundError("Selected script must be an existing .py file inside your analytics folder.")
+            if not script_path.is_file() or not self.server.config.is_supported_script(script_path):
+                exts = ", ".join(sorted(self.server.config.allowed_extensions()))
+                raise FileNotFoundError(
+                    f"Selected script must be an existing supported script ({exts}) inside your analytics folder."
+                )
 
         freshness_path = str(body.get("freshness_path") or "").strip()
         if freshness_path:
