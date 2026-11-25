@@ -99,6 +99,11 @@ class PipelineRunner:
                 _kill_process_tree(proc)
         for _ in range(self.config.max_concurrent_runs):
             self._work_queue.put(None)
+        current = threading.current_thread()
+        for t in list(self._threads):
+            if t is not current and t.is_alive():
+                t.join(timeout=5.0)
+        self._threads.clear()
 
     def active_counts(self) -> dict[str, int]:
         with self._lock:
@@ -394,9 +399,9 @@ class PipelineRunner:
                 log_fh.flush()
                 self._publish(run_id, {"type": "line", "text": footer})
 
-                self.db.mark_run_finished(run_id, status, exit_code, duration, summary)
                 if status == "succeeded":
                     self._write_freshness_badge(job, duration)
+                self.db.mark_run_finished(run_id, status, exit_code, duration, summary)
                 self._publish(run_id, {"type": "done", "status": status, "duration_sec": round(duration, 2)})
 
         except Exception as exc:
