@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analytics Scheduler</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="ambient-bg" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <!-- Slim Futuristic Command Topbar -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" stroke-opacity="0.45"/>
+              <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M7.5 13.5L10.5 10.5L13 13L16.8 8.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="16.8" cy="8.5" r="1.6" fill="currentColor"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name" id="app-title">Analytics Scheduler</span>
+            <span class="brand-sub" id="greeting-chip">Mission Control</span>
+          </div>
+        </div>
+
+        <!-- Three Clean Categories: Scripts · Schedules · Results -->
+        <nav class="nav-tabs" aria-label="Primary sections">
+          <button class="nav-tab active" data-view="scripts" id="tab-scripts">
+            Scripts <span class="tab-count" id="nav-count-scripts">0</span>
+          </button>
+          <button class="nav-tab" data-view="schedules" id="tab-schedules">
+            Schedules <span class="tab-count" id="nav-count-schedules">0</span>
+          </button>
+          <button class="nav-tab" data-view="results" id="tab-results">
+            Results <span class="tab-badge-err hidden" id="nav-badge-failed">0</span>
+          </button>
+        </nav>
+
+        <div class="topbar-right">
+          <div class="worker-hud" id="queue-pill" title="Active Python worker slots">
+            <span class="hud-dot"></span>
+            <span id="queue-text">Ready · 0/4</span>
+          </div>
+          <div class="user-pill" id="user-pill" title="Signed in via Windows Authentication">
+            <span class="user-avatar" id="user-avatar">A</span>
+            <span id="user-name">Loading...</span>
+          </div>
+          <button class="btn btn-primary" id="btn-new-job">
+            <span class="btn-plus">+</span> Add Script
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="main-wrap">
+      <!-- ==================== 1. SCRIPTS VIEW ==================== -->
+      <section id="view-scripts">
+        <div class="hud-bar">
+          <div class="stat-pills" role="tablist" aria-label="Filter scripts">
+            <button class="stat-pill active" data-filter="all">All <span class="count" id="count-all">0</span></button>
+            <button class="stat-pill" data-filter="healthy"><span class="orb orb-healthy"></span>Healthy <span class="count" id="count-healthy">0</span></button>
+            <button class="stat-pill" data-filter="failed"><span class="orb orb-failed"></span>Attention <span class="count" id="count-failed">0</span></button>
+            <button class="stat-pill" data-filter="running"><span class="orb orb-running"></span>Active <span class="count" id="count-running">0</span></button>
+            <button class="stat-pill" data-filter="paused"><span class="orb orb-paused"></span>Paused <span class="count" id="count-paused">0</span></button>
+          </div>
+
+          <div class="hud-controls">
+            <div class="search-wrap">
+              <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="M20 20L16.5 16.5" stroke-linecap="round"></path>
+              </svg>
+              <input type="search" id="search-input" class="search-input" placeholder="Filter scripts, paths, owners..." />
+              <kbd class="kbd-hint">/</kbd>
+            </div>
+            <label class="mine-toggle">
+              <input type="checkbox" id="filter-mine" />
+              <span>Mine</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="deck-panel" id="deck-panel">
+          <div class="deck-header" aria-hidden="true">
+            <span>Script</span>
+            <span>Schedule</span>
+            <span>Owner</span>
+            <span>Recent Runs</span>
+            <span>Status</span>
+            <span class="align-right">Actions</span>
+          </div>
+          <div id="jobs-list" class="jobs-list"></div>
+        </div>
+
+        <div id="empty-state" class="empty-state hidden">
+          <div class="empty-orb" aria-hidden="true">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M12 5V19M5 12H19" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h2 id="empty-title">No scripts registered</h2>
+          <p id="empty-body">Pick any Python script from your analytics share and configure when it runs in seconds.</p>
+          <button class="btn btn-primary" id="btn-empty-new">+ Add your first script</button>
+        </div>
+      </section>
+
+      <!-- ==================== 2. SCHEDULES VIEW ==================== -->
+      <section id="view-schedules" class="hidden">
+        <!-- Upcoming Queue Strip -->
+        <div class="upcoming-strip" id="upcoming-strip">
+          <div class="strip-label">NEXT UP</div>
+          <div class="upcoming-items" id="upcoming-items"></div>
+        </div>
+
+        <!-- Weekly Timeline Matrix -->
+        <div class="timeline-header">
+          <div>
+            <h2 class="section-title">Weekly Schedule Matrix</h2>
+            <p class="section-note">Spot busy morning windows at a glance. Click any chip to reschedule or pause.</p>
+          </div>
+          <div class="timeline-controls">
+            <label class="mine-toggle">
+              <input type="checkbox" id="timeline-show-all-hours" />
+              <span>Show quiet hours</span>
+            </label>
+          </div>
+        </div>
+        <div id="timeline-grid" class="timeline-grid"></div>
+
+        <!-- Compact Active / Paused Cadence Controls -->
+        <div class="schedule-roster-wrap">
+          <div class="roster-header">
+            <h3 class="section-title-sm">All Cadences</h3>
+            <span class="muted">Toggle schedules on or off without deleting scripts</span>
+          </div>
+          <div class="deck-panel">
+            <div class="roster-grid-header" aria-hidden="true">
+              <span>Script</span>
+              <span>Cadence</span>
+              <span>Next Run</span>
+              <span>State</span>
+              <span class="align-right">Controls</span>
+            </div>
+            <div id="schedule-roster-list" class="jobs-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 3. RESULTS VIEW ==================== -->
+      <section id="view-results" class="hidden">
+        <div class="hud-bar">
+          <div class="stat-pills" role="tablist" aria-label="Filter results">
+            <button class="stat-pill active" data-res-filter="all">All Runs <span class="count" id="res-count-all">0</span></button>
+            <button class="stat-pill" data-res-filter="succeeded"><span class="orb orb-healthy"></span>Succeeded <span class="count" id="res-count-ok">0</span></button>
+            <button class="stat-pill" data-res-filter="failed"><span class="orb orb-failed"></span>Failed <span class="count" id="res-count-err">0</span></button>
+            <button class="stat-pill" data-res-filter="active"><span class="orb orb-running"></span>Active <span class="count" id="res-count-active">0</span></button>
+          </div>
+
+          <div class="hud-controls">
+            <span class="pass-rate-pill" id="res-pass-rate">—</span>
+            <div class="search-wrap">
+              <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="M20 20L16.5 16.5" stroke-linecap="round"></path>
+              </svg>
+              <input type="search" id="results-search-input" class="search-input" placeholder="Filter results by script or error..." />
+            </div>
+          </div>
+        </div>
+
+        <div class="deck-panel" id="results-panel">
+          <div class="results-header" aria-hidden="true">
+            <span>Status</span>
+            <span>Script</span>
+            <span>Trigger</span>
+            <span>Started</span>
+            <span>Duration</span>
+            <span>Outcome</span>
+            <span class="align-right">Actions</span>
+          </div>
+          <div id="results-list" class="jobs-list"></div>
+        </div>
+
+        <div id="results-empty" class="empty-state hidden">
+          <h2>No execution results yet</h2>
+          <p>Run any script from the Scripts tab to see live telemetry, durations, and logs here.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Backdrop -->
+  <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+
+  <!-- ADD / EDIT SCRIPT & SCHEDULE DRAWER -->
+  <aside class="drawer hidden" id="job-drawer" aria-labelledby="job-drawer-title">
+    <div class="drawer-header">
+      <div>
+        <h2 id="job-drawer-title">Add Script</h2>
+        <p class="drawer-sub" id="job-drawer-sub">Pick a Python script from the share and set its schedule.</p>
+      </div>
+      <button class="icon-btn" id="close-job-drawer" aria-label="Close">✕</button>
+    </div>
+
+    <form id="job-form" class="drawer-body">
+      <input type="hidden" id="field-job-id" />
+
+      <div class="form-group">
+        <div class="label-row">
+          <label for="field-script-ref">Python script</label>
+          <button type="button" class="link-btn" id="btn-toggle-browser">Browse share</button>
+        </div>
+        <div class="script-display" id="script-display-box">
+          <span class="script-path-text" id="selected-script-text">No script selected</span>
+          <button type="button" class="btn btn-subtle btn-sm" id="btn-browse-inline">Browse</button>
+        </div>
+        <input type="hidden" id="field-script-ref" required />
+        <div class="readme-hint hidden" id="readme-hint">
+          <span class="readme-spark">✦</span>
+          <span id="readme-hint-text">Auto-filled title &amp; note from README.md</span>
+        </div>
+
+        <div class="file-browser hidden" id="file-browser">
+          <div class="browser-top">
+            <select id="browser-root-select" class="input input-sm hidden"></select>
+            <div class="breadcrumbs" id="browser-breadcrumbs"></div>
+          </div>
+          <div class="browser-list" id="browser-list"></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="field-name">Script name</label>
+        <input type="text" id="field-name" class="input" placeholder="e.g., Executive Sales Dashboard" required />
+      </div>
+
+      <div class="form-group">
+        <label for="field-description">Short note <span class="opt">(optional)</span></label>
+        <textarea id="field-description" class="input input-textarea" rows="2" placeholder="What dashboard or Snowflake data does this refresh?"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label>Schedule</label>
+        <div class="cadence-pills" id="cadence-pills">
+          <button type="button" class="cadence-pill active" data-type="weekdays">Weekdays</button>
+          <button type="button" class="cadence-pill" data-type="daily">Daily</button>
+          <button type="button" class="cadence-pill" data-type="weekly">Weekly</button>
+          <button type="button" class="cadence-pill" data-type="monthly">Monthly</button>
+          <button type="button" class="cadence-pill" data-type="interval">Every X hrs</button>
+          <button type="button" class="cadence-pill" data-type="manual">Manual</button>
+        </div>
+
+        <div class="cadence-panel" id="cadence-panel">
+          <div class="cadence-row" id="row-time">
+            <label for="field-time">Run at</label>
+            <input type="time" id="field-time" class="input input-time" value="07:00" />
+          </div>
+
+          <div class="cadence-row hidden" id="row-weekly-days">
+            <label>On days</label>
+            <div class="day-chips" id="weekly-day-chips">
+              <button type="button" class="day-chip active" data-day="0">Mon</button>
+              <button type="button" class="day-chip" data-day="1">Tue</button>
+              <button type="button" class="day-chip active" data-day="2">Wed</button>
+              <button type="button" class="day-chip" data-day="3">Thu</button>
+              <button type="button" class="day-chip active" data-day="4">Fri</button>
+              <button type="button" class="day-chip" data-day="5">Sat</button>
+              <button type="button" class="day-chip" data-day="6">Sun</button>
+            </div>
+          </div>
+
+          <div class="cadence-row hidden" id="row-monthly">
+            <label for="field-monthly-mode">Which day</label>
+            <div class="inline-fields">
+              <select id="field-monthly-mode" class="input">
+                <option value="first_business_day">1st business day</option>
+                <option value="last_business_day">Last business day</option>
+                <option value="day_of_month">Specific day of month</option>
+              </select>
+              <input type="number" id="field-monthly-day" class="input input-num hidden" min="1" max="31" value="1" />
+            </div>
+          </div>
+
+          <div class="cadence-interval hidden" id="row-interval">
+            <div class="cadence-row">
+              <label for="field-every-hours">Repeat every</label>
+              <select id="field-every-hours" class="input">
+                <option value="1">1 hour</option>
+                <option value="2" selected>2 hours</option>
+                <option value="3">3 hours</option>
+                <option value="4">4 hours</option>
+                <option value="6">6 hours</option>
+              </select>
+            </div>
+            <div class="cadence-row">
+              <label>Between</label>
+              <div class="inline-fields">
+                <select id="field-start-hour" class="input"></select>
+                <span class="muted">to</span>
+                <select id="field-end-hour" class="input"></select>
+              </div>
+            </div>
+            <label class="check-row">
+              <input type="checkbox" id="field-interval-weekdays" checked />
+              <span>Weekdays only (Mon–Fri)</span>
+            </label>
+          </div>
+
+          <div class="schedule-preview" id="schedule-preview">Runs every weekday at 7:00 AM</div>
+        </div>
+      </div>
+
+      <details class="more-options" id="more-options">
+        <summary>More options <span class="opt">(dashboard link, owner, timeout, arguments)</span></summary>
+        <div class="more-options-body">
+          <div class="form-group">
+            <label for="field-dashboard-url">Dashboard URL <span class="opt">(adds a quick launch link)</span></label>
+            <input type="text" id="field-dashboard-url" class="input" placeholder="/dashboards/executive-sales/ or https://..." />
+          </div>
+          <div class="two-col">
+            <div class="form-group">
+              <label for="field-owner">Owner</label>
+              <input type="text" id="field-owner" class="input" placeholder="Your name" />
+            </div>
+            <div class="form-group">
+              <label for="field-timeout">Timeout (minutes)</label>
+              <input type="number" id="field-timeout" class="input" min="1" max="480" value="45" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="field-args">Script arguments <span class="opt">(optional)</span></label>
+            <input type="text" id="field-args" class="input" placeholder="e.g., --env prod --lookback 30" />
+          </div>
+          <div class="form-group">
+            <label for="field-freshness">Freshness JSON path <span class="opt">(optional)</span></label>
+            <input type="text" id="field-freshness" class="input" placeholder="projects:executive_sales/reports/freshness.json" />
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="field-enabled" checked />
+            <span>Schedule is active (uncheck to pause automatic runs)</span>
+          </label>
+        </div>
+      </details>
+
+      <div class="form-error hidden" id="job-form-error"></div>
+
+      <div class="drawer-footer">
+        <div class="footer-left">
+          <button type="button" class="btn btn-danger-ghost hidden" id="btn-delete-job">Delete</button>
+        </div>
+        <div class="footer-right">
+          <button type="button" class="btn btn-subtle" id="btn-cancel-job">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-job">Save</button>
+        </div>
+      </div>
+    </form>
+  </aside>
+
+  <!-- LOGS & TELEMETRY DRAWER -->
+  <aside class="drawer drawer-wide hidden" id="logs-drawer" aria-labelledby="logs-drawer-title">
+    <div class="drawer-header">
+      <div class="logs-title-wrap">
+        <h2 id="logs-drawer-title">Run Telemetry</h2>
+        <p class="drawer-sub mono-sub" id="logs-drawer-script"></p>
+      </div>
+      <div class="drawer-header-actions">
+        <button class="btn btn-primary btn-sm" id="btn-logs-run-now">▶ Run now</button>
+        <button class="btn btn-danger btn-sm hidden" id="btn-logs-stop">■ Stop</button>
+        <button class="icon-btn" id="close-logs-drawer" aria-label="Close">✕</button>
+      </div>
+    </div>
+
+    <div class="drawer-body logs-body">
+      <div class="history-section">
+        <div class="history-label-row">
+          <span class="section-mini-label">Run history (height = duration)</span>
+          <span class="muted" id="history-hint">Click any bar to inspect</span>
+        </div>
+        <div class="history-strip" id="logs-history-strip"></div>
+      </div>
+
+      <div class="run-banner" id="run-banner">
+        <div class="run-banner-main">
+          <span class="status-pill" id="run-status-pill">No runs yet</span>
+          <span class="run-meta" id="run-meta-text">Click "Run now" to test this script.</span>
+        </div>
+        <div class="run-banner-actions">
+          <button class="btn btn-ai btn-sm hidden" id="btn-copy-ai">✦ Copy error for AI</button>
+          <button class="btn btn-subtle btn-sm" id="btn-copy-log">Copy log</button>
+        </div>
+      </div>
+
+      <div class="error-callout hidden" id="run-error-callout"></div>
+
+      <div class="log-terminal-wrap">
+        <div class="log-terminal-bar">
+          <span class="live-badge hidden" id="log-live-badge"><span class="pulse-dot"></span>Streaming live</span>
+          <span class="muted" id="log-line-count">0 lines</span>
+          <label class="autoscroll-toggle">
+            <input type="checkbox" id="log-autoscroll" checked />
+            <span>Auto-scroll</span>
+          </label>
+        </div>
+        <pre class="log-terminal" id="log-output">Select a run to view its console output.</pre>
+      </div>
+    </div>
+  </aside>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# Local runtime data & logs
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local archives & secrets
+*.zip
+.env
+.env.*
+*.pem
+*.p8
+*.key
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
