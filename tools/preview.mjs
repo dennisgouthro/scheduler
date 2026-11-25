@@ -28,6 +28,21 @@ const ROOTS = (CONFIG.scripts_roots || []).map((r) => ({
 const EXCLUDED_DIRS = new Set([".git", ".venv", "venv", "__pycache__", "node_modules"]);
 const DAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const DAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const BUILTIN_EXTENSIONS = [".bat", ".cmd", ".js", ".mjs", ".ps1", ".py", ".r", ".vbs"];
+const SUPPORTED_EXTENSIONS = Array.from(
+  new Set([
+    ...BUILTIN_EXTENSIONS,
+    ...Object.keys(CONFIG.script_runners || {}).map((e) => (e.startsWith(".") ? e.toLowerCase() : `.${e.toLowerCase()}`)),
+  ])
+).sort();
+const SUPPORTED_EXT_SET = new Set(SUPPORTED_EXTENSIONS);
+const SERVER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
+
+function parseIntOr(val, fallback) {
+  if (val === "" || val === null || val === undefined) return fallback;
+  const n = Number(val);
+  return Number.isNaN(n) ? fallback : n;
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -39,9 +54,9 @@ const MIME = {
 };
 
 function formatTime12(hhmm = "07:00") {
-  const [hStr, mStr] = hhmm.split(":");
-  const h = Number(hStr) || 0;
-  const m = Number(mStr) || 0;
+  const [hStr, mStr] = String(hhmm || "07:00").split(":");
+  const h = parseIntOr(hStr, 0);
+  const m = parseIntOr(mStr, 0);
   const suffix = h < 12 ? "AM" : "PM";
   const h12 = h % 12 || 12;
   return `${h12}:${String(m).padStart(2, "0")} ${suffix}`;
@@ -59,31 +74,112 @@ function describeSchedule(type, cfg = {}) {
   if (type === "monthly") {
     if (cfg.day_mode === "first_business_day") return `1st business day at ${formatTime12(cfg.time)}`;
     if (cfg.day_mode === "last_business_day") return `Last business day at ${formatTime12(cfg.time)}`;
-    return `Monthly on day ${cfg.day || 1} at ${formatTime12(cfg.time)}`;
+    return `Monthly on day ${parseIntOr(cfg.day, 1)} at ${formatTime12(cfg.time)}`;
   }
   if (type === "interval") {
-    const every = cfg.every_hours || 2;
+    const every = parseIntOr(cfg.every_hours, 2);
+    const sh = parseIntOr(cfg.start_hour, 7);
+    const eh = parseIntOr(cfg.end_hour, 18);
     const scope = cfg.weekdays_only === false ? "daily" : "weekdays";
-    return `Every ${every === 1 ? "hour" : `${every} hrs`}, ${formatTime12(`${cfg.start_hour ?? 7}:00`)}–${formatTime12(`${cfg.end_hour ?? 18}:00`)} (${scope})`;
+    return `Every ${every === 1 ? "hour" : `${every} hrs`}, ${formatTime12(`${sh}:00`)}–${formatTime12(`${eh}:00`)} (${scope})`;
   }
   return "Manual only";
 }
 
+function monthlyTargetDay(year, monthIndex, cfg = {}) {
+  const lastDate = new Date(year, monthIndex + 1, 0).getDate();
+  if (cfg.day_mode === "first_business_day") {
+    for (let day = 1; day <= lastDate; day++) {
+      const dow = new Date(year, monthIndex, day).getDay();
+      if (dow !== 0 && dow !== 6) return day;
+    }
+    return 1;
+  }
+  if (cfg.day_mode === "last_business_day") {
+    for (let day = lastDate; day >= 1; day--) {
+      const dow = new Date(year, monthIndex, day).getDay();
+      if (dow !== 0 && dow !== 6) return day;
+    }
+    return lastDate;
+  }
+  return Math.max(1, Math.min(lastDate, parseIntOr(cfg.day, 1)));
+}
+
+function nextRunDate(type, cfg = {}, enabled = true) {
+  if (!enabled || type === "manual") return null;
+  const now = new Date();
+  const [h, m] = (cfg.time || "07:00").split(":").map((n) => parseIntOr(n, 0));
+
+  if (type === "daily" || type === "weekdays" || type === "weekly") {
+    const allowedDays =
+      type === "daily"
+        ? new Set([0, 1, 2, 3, 4, 5, 6])
+        : type === "weekdays"
+          ? new Set([0, 1, 2, 3, 4])
+          : new Set(Array.isArray(cfg.days) && cfg.days.length ? cfg.days : [0]);
+    for (let offset = 0; offset <= 14; offset++) {
+      const cand = new Date(now);
+      cand.setDate(now.getDate() + offset);
+      cand.setHours(h, m, 0, 0);
+      const monDow = (cand.getDay() + 6) % 7;
+      if (allowedDays.has(monDow) && cand > now) return cand;
+    }
+    return null;
+  }
+
+  if (type === "monthly") {
+    for (let mOff = 0; mOff <= 3; mOff++) {
+      const y = now.getFullYear() + Math.floor((now.getMonth() + mOff) / 12);
+      const mo = (now.getMonth() + mOff) % 12;
+      const day = monthlyTargetDay(y, mo, cfg);
+      const cand = new Date(y, mo, day, h, m, 0, 0);
+      if (cand > now) return cand;
+    }
+    return null;
+  }
+
+  if (type === "interval") {
+    const every = Math.max(1, parseIntOr(cfg.every_hours, 2));
+    const sh = parseIntOr(cfg.start_hour, 7);
+    const eh = Math.max(sh, parseIntOr(cfg.end_hour, 18));
+    const min = Math.max(0, Math.min(59, parseIntOr(cfg.minute, 0)));
+    const allowedDays = cfg.weekdays_only === false ? new Set([0, 1, 2, 3, 4, 5, 6]) : new Set([0, 1, 2, 3, 4]);
+    for (let offset = 0; offset <= 14; offset++) {
+      const base = new Date(now);
+      base.setDate(now.getDate() + offset);
+      const monDow = (base.getDay() + 6) % 7;
+      if (!allowedDays.has(monDow)) continue;
+      for (let hr = sh; hr <= eh; hr += every) {
+        const cand = new Date(base.getFullYear(), base.getMonth(), base.getDate(), hr, min, 0, 0);
+        if (cand > now) return cand;
+      }
+    }
+    return null;
+  }
+
+  return null;
+}
+
 function computeWeeklySlots(type, cfg = {}, enabled = true) {
   if (!enabled || type === "manual") return [];
-  const [h, m] = (cfg.time || "07:00").split(":").map((n) => Number(n) || 0);
+  const [h, m] = (cfg.time || "07:00").split(":").map((n) => parseIntOr(n, 0));
   if (type === "daily") return [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, hour: h, minute: m }));
   if (type === "weekdays") return [0, 1, 2, 3, 4].map((day) => ({ day, hour: h, minute: m }));
-  if (type === "weekly") return (cfg.days || [0]).map((day) => ({ day, hour: h, minute: m }));
-  if (type === "monthly") return [{ day: 0, hour: h, minute: m, monthly: true }];
+  if (type === "weekly") return (Array.isArray(cfg.days) && cfg.days.length ? cfg.days : [0]).map((day) => ({ day, hour: h, minute: m }));
+  if (type === "monthly") {
+    const nxt = nextRunDate(type, cfg, enabled);
+    const day = nxt ? (nxt.getDay() + 6) % 7 : 0;
+    return [{ day, hour: h, minute: m, monthly: true }];
+  }
   if (type === "interval") {
     const slots = [];
     const days = cfg.weekdays_only === false ? [0, 1, 2, 3, 4, 5, 6] : [0, 1, 2, 3, 4];
-    const every = Math.max(1, Number(cfg.every_hours) || 2);
-    const sh = Number(cfg.start_hour ?? 7);
-    const eh = Number(cfg.end_hour ?? 18);
+    const every = Math.max(1, parseIntOr(cfg.every_hours, 2));
+    const sh = parseIntOr(cfg.start_hour, 7);
+    const eh = Math.max(sh, parseIntOr(cfg.end_hour, 18));
+    const min = Math.max(0, Math.min(59, parseIntOr(cfg.minute, 0)));
     for (const day of days) {
-      for (let hr = sh; hr <= eh; hr += every) slots.push({ day, hour: hr, minute: 0 });
+      for (let hr = sh; hr <= eh; hr += every) slots.push({ day, hour: hr, minute: min });
     }
     return slots;
   }
@@ -91,17 +187,8 @@ function computeWeeklySlots(type, cfg = {}, enabled = true) {
 }
 
 function nextRunPreview(type, cfg = {}, enabled = true) {
-  if (!enabled || type === "manual") return null;
-  const now = new Date();
-  const [h, m] = (cfg.time || "07:00").split(":").map((n) => Number(n) || 0);
-  const d = new Date(now);
-  d.setSeconds(0, 0);
-  d.setHours(type === "interval" ? Number(cfg.start_hour ?? 7) : h, m, 0, 0);
-  if (d <= now) d.setDate(d.getDate() + 1);
-  if (type === "weekdays") {
-    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
-  }
-  return d.toISOString();
+  const nxt = nextRunDate(type, cfg, enabled);
+  return nxt ? nxt.toISOString() : null;
 }
 
 function scrubText(text) {
@@ -465,12 +552,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (["POST", "PUT", "DELETE"].includes(req.method) && req.headers["x-scheduler-request"] !== "1") {
+      return sendJson(res, 403, { error: "Missing required X-Scheduler-Request header." });
+    }
+
     if (req.method === "GET" && pathname === "/api/me") {
       return sendJson(res, 200, {
         user,
         app_name: CONFIG.app_name || "Analytics Scheduler",
         dev_mode: true,
         default_timeout_minutes: CONFIG.default_timeout_minutes || 45,
+        supported_extensions: SUPPORTED_EXTENSIONS,
+        timezone: SERVER_TIMEZONE,
         roots: ROOTS.map((r) => ({ id: r.id, label: r.label })),
         queue: queueStats(),
       });
@@ -496,8 +589,11 @@ const server = http.createServer(async (req, res) => {
             path: childRel,
             is_project: fs.existsSync(path.join(full, "README.md")) || fs.existsSync(path.join(full, "python")),
           });
-        } else if (e.isFile() && e.name.toLowerCase().endsWith(".py")) {
-          scripts.push({ name: e.name, path: childRel, script_ref: `${root.id}:${childRel}` });
+        } else if (e.isFile()) {
+          const ext = path.extname(e.name).toLowerCase();
+          if (SUPPORTED_EXT_SET.has(ext)) {
+            scripts.push({ name: e.name, path: childRel, script_ref: `${root.id}:${childRel}`, ext });
+          }
         }
       }
       const breadcrumbs = [{ label: root.label, path: "" }];
@@ -525,7 +621,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       const fallbackName = path
-        .basename(target, ".py")
+        .basename(target, path.extname(target))
         .replace(/[_\-]+/g, " ")
         .replace(/\b\w/g, (c) => c.toUpperCase());
       return sendJson(res, 200, {
@@ -617,6 +713,19 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, serializeJob(job));
       }
       if (req.method === "DELETE") {
+        const active = runsForJob(parts[2]).find((r) => r.status === "running" || r.status === "queued");
+        if (active) {
+          return sendJson(res, 409, { error: "Cannot delete a script while it is running. Stop the active run first." });
+        }
+        for (const r of runsForJob(parts[2])) {
+          const t = activeTimers.get(r.id);
+          if (t) {
+            clearInterval(t);
+            activeTimers.delete(r.id);
+          }
+          runs.delete(r.id);
+          runLogs.delete(r.id);
+        }
         jobs.delete(parts[2]);
         return sendJson(res, 200, { deleted: true });
       }
@@ -658,7 +767,7 @@ const server = http.createServer(async (req, res) => {
       const job = jobs.get(run.job_id) || null;
       const log = runLogs.get(run.id) || "";
       const ai_prompt = job
-        ? `A scheduled analytics Python script failed on the server. Please help diagnose and fix it.\n\n- **Pipeline:** ${job.name}\n- **Script:** \`${job.script_ref}\`\n- **Status:** ${run.status} (exit code: ${run.exit_code})\n- **Error summary:** ${run.error_summary}\n\n### Recent Log Output (secrets scrubbed)\n\`\`\`text\n${log}\n\`\`\`\n`
+        ? `A scheduled analytics script failed on the server. Please help diagnose and fix it.\n\n- **Pipeline:** ${job.name}\n- **Script:** \`${job.script_ref}\`\n- **Status:** ${run.status} (exit code: ${run.exit_code})\n- **Error summary:** ${run.error_summary || `Exited with code ${run.exit_code}`}\n\n### Recent Log Output (secrets scrubbed)\n\`\`\`text\n${log}\n\`\`\`\n`
         : "";
       return sendJson(res, 200, { run, job: job ? serializeJob(job) : null, log, ai_prompt });
     }
